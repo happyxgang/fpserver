@@ -14,8 +14,6 @@ app = Flask(__name__)
 ws = GeventWebSocket(app)
 app.debug=True
 
-
-
 def next_time_hash(d):
     for h in d[:-1].split(','):
         yield h
@@ -28,6 +26,8 @@ def parse_id_starttime(s):
     values = s.split(',')
     assert(len(values) == 2)
     return str(values[0]), int(values[1])
+def getRedis(host='localhost',dbnum=0):
+    return redis.Redis(host=host,db=dbnum)
 
 def find_match(d, song_id):
     real_song_id = song_id
@@ -44,7 +44,7 @@ def find_match(d, song_id):
 
         start_time, hash_value = parse_starttime_hash(h)
 
-        r = redis.Redis(db=1)
+        r = getRedis(host='172.18.184.202')
         result_str_arr = r.smembers('h:' + hash_value)
 
 
@@ -55,7 +55,8 @@ def find_match(d, song_id):
             find_landmark_num = find_landmark_num + 1
 
             song_id, start_time_song = parse_id_starttime(str_value)
-
+            if song_id == '1101':
+                continue
             delta_t = start_time_song - start_time
             if delta_t >= 0:
                 result_dic[song_id][delta_t] += 1
@@ -82,14 +83,17 @@ def find_match(d, song_id):
                 second_id = s_id
             if num > max_match_num - max_match_num*0.25:
                 if not name_printed:
+                    if s_id == final_id:
+                        print u"命中歌曲"
                     print "song id: " , s_id
                     name_printed = True
                 top25=top25+1
                 print("delta t: ", dt, "hashnum: ", num)
-
-    song_name = r.get('song_id:' + str(final_id))
+    name_redis = getRedis()
+    song_name = name_redis.get('song_id:' + str(final_id))
     print song_name
     print "find landmark num " ,find_landmark_num
+    print "highest match hash num",max_match_num
     print "match hash num ", match_hash_num
     print "total hash num: " ,  hash_num
     ret =  json.dumps({'id':str(final_id),'delta_t':str(final_delta_t)
@@ -108,6 +112,7 @@ def find_match(d, song_id):
 @app.route('/query', methods=['GET', 'POST'])
 def query():
     data = None
+    song_id = -1
     if request.method == 'POST':
         data = request.data
         query = request.query_string
@@ -125,7 +130,11 @@ def query():
             return "no fp"
     if not data or data == "":
         return json.dumps({'error':"no post data"})
+    print "searching database for user input"
+    now = time.time()
     result = find_match(data,song_id)
+    query_time = time.time() - now
+    print 'query time: ',query_time
     return result
 @app.route('/xzg')
 def xzg():
