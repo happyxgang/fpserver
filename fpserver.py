@@ -10,6 +10,7 @@ import json
 from urlparse import parse_qs
 from collections import defaultdict
 from flask_uwsgi_websocket import GeventWebSocket
+from Queue import PriorityQueue
 app = Flask(__name__)
 ws = GeventWebSocket(app)
 app.debug=True
@@ -50,14 +51,11 @@ def find_match(d, song_id):
     final_delta_t = -1
     max_match_num = 0
 
+    r = getRedis(host=redisServerIp, dbnum=dbnum)
     for h in next_time_hash(d):
         hash_num = hash_num + 1
-
         start_time, hash_value = parse_starttime_hash(h)
-
-        r = getRedis(host=redisServerIp, dbnum=dbnum)
-        result_str_arr = r.smembers('h:' + hash_value)
-
+        result_str_arr = r.smembers(hash_value)
 
         if result_str_arr and len(result_str_arr) > 0:
             match_hash_num = max_match_num + 1
@@ -66,29 +64,44 @@ def find_match(d, song_id):
             find_landmark_num = find_landmark_num + 1
 
             song_id, start_time_song = parse_id_starttime(str_value)
-            if song_id == '1101':
-                continue
+            #if song_id == '1101':
+            #    continue
             delta_t = start_time_song - start_time
-            if delta_t >= 0:
-                result_dic[song_id][delta_t] += 1
-                if result_dic[song_id][delta_t] > max_match_num:
-                    max_match_num = result_dic[song_id][delta_t]
-                    final_id = song_id
-                    final_delta_t = delta_t
-                    break # what use??!#!@#!@#!@#@#!@#
+
+            result_dic[song_id][delta_t] += 1
+            hash_count = result_dic[song_id][delta_t] + result_dic[song_id].get(delta_t-1,0) + result_dic[song_id].get(delta_t+1,0)
+            if  hash_count > max_match_num:
+                max_match_num = hash_count
+                final_id = song_id
+                final_delta_t = delta_t
+                break # what use??!#!@#!@#!@#@#!@#
     top25=0
     second_max = 0
     second_id = 0
     real_song_hash_match = -1
     real_song_hash_match_time = -1
+    song_below_20_num = 0
+
+    # hash_thresh = 100
+    #
+    # for (s_id, song_value) in result_dic.iteritems():
+    #     if len(song_value) < hash_thresh:
+    #         song_below_20_num += 1
+    print "song_below_20_num : " ,song_below_20_num
+    print "total_song_num : " ,len(result_dic)
+    top25_song_id_queue = PriorityQueue(25)
     for (s_id, song_value) in result_dic.iteritems():
         name_printed=False
+        #max matched hash number per song
+        max_matched_hash_number_per_song = 0;
         for (dt,num) in song_value.iteritems():
+            num = song_value.get(dt,0) + song_value.get(dt-1,0) + song_value.get(dt+1,0)
+            if(max_matched_hash_number_per_song < num):
+                max_matched_hash_number_per_song = num
             if int(real_song_id) == int(s_id):
                 if real_song_hash_match < num:
                     real_song_hash_match = num
                     real_song_hash_match_time = dt
-
             if num > second_max and s_id != final_id:
                 second_max = num
                 second_id = s_id
@@ -100,12 +113,27 @@ def find_match(d, song_id):
                     name_printed = True
                 top25=top25+1
                 print("delta t: ", dt, "hashnum: ", num)
+        if(top25_song_id_queue.full()):
+            top25_song_id_queue.get()
+        top25_song_id_queue.put((max_matched_hash_number_per_song, s_id),False)
+
+    # while not top25_song_id_queue.empty():
+    #     _, song_id = top25_song_id_queue.get_nowait()
+    #     filename = str(final_id) + "_" + str(song_id) + ".txt"
+    #     if song_id == final_id:
+    #         filename = str(final_id) + "_" + str(song_id) + "_final.txt"
+    #     output_file = open(filename,'w')
+    #     song_result = result_dic[song_id]
+    #     for delta_t, match_time in song_result.iteritems():
+    #         output_file.write(str(match_time)+','+str(delta_t) + '\n')
+    #     output_file.close()
+
     name_redis = getRedis()
     song_name = name_redis.get('song_id:' + str(final_id))
     print song_name
     print "find landmark num " ,find_landmark_num
     print "highest match hash num",max_match_num
-    print "match hash num ", match_hash_num
+    #print "match hash num ", match_hash_num
     print "total hash num: " ,  hash_num
     is_match = 'f'
     if str(real_song_id) == str(final_id):
@@ -121,14 +149,15 @@ def find_match(d, song_id):
         , 'second_id':str(second_id)
         , 'top25_num':str(top25)
         , 'total_hash_num':str(hash_num)
-        , 'match_hash_num':str(match_hash_num)
-        , 'hash_num':str(max_match_num)
-        , 'song_name':song_name}
+        , 'match_hash_num':str(max_match_num)
+        #, 'id_song_hash_time':str(max_match_num)
+        , 'song_name':song_name.decode('utf-8').encode('utf-8')}
 
     print json.dumps(ret)
     return ret
 @app.route('/query', methods=['GET', 'POST'])
 def query():
+    print "search starting"
     data = None
     song_id = -1
     if request.method == 'POST':
@@ -149,11 +178,12 @@ def query():
     if not data or data == "":
         return json.dumps({'error':"no post data"})
     print "searching database for user input"
+
     now = time.time()
     result = find_match(data,song_id)
     query_time = time.time() - now
     print 'query time: ',query_time
-    result["query_time"] = query_time;
+    result["query_time"] = str(query_time);
     with open('/home/kevin/Desktop/query_result','a') as result_file:
         result_file.write(json.dumps(result, ensure_ascii=False,indent=2))
         result_file.write('\r\n')
